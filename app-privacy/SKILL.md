@@ -1,11 +1,11 @@
 ---
 name: app-privacy
-description: Scan SwiftUI/iOS codebases to detect privacy-relevant SDKs, frameworks, AI APIs (Apple Intelligence, OpenAI, Gemini, Claude/Anthropic, Mistral), and data collection patterns. Generates App Store Privacy Details, Age Rating answers, PrivacyInfo.xcprivacy per platform target, AI-PRIVACY-DISCLOSURE.md for §5.1.2(i) compliance, App Store compliance findings, and a professional .docx report, PDF, or Markdown (user's choice) saved to Docs/AppPrivacyReport/
+description: Scan SwiftUI/iOS codebases to detect privacy-relevant SDKs, frameworks, AI APIs (Apple Intelligence, OpenAI, Gemini, Claude/Anthropic, Mistral), and data collection patterns. Features deep scan for manifest drift, stale tracking/advertising keys, Device ID / Firebase Analytics parity, App Store rejection prevention, PrivacyInfo.xcprivacy per platform target, AI-PRIVACY-DISCLOSURE.md for §5.1.2(i) compliance, and professional reports (.docx, .pdf, .md) saved to Docs/AppPrivacyReport/
 ---
 
 # App Privacy & Age Rating Skill
 
-You are an expert in Apple's App Store Privacy requirements and Age Rating system. When invoked, you scan the user's Xcode project to detect all privacy-relevant SDKs, frameworks, and data collection patterns, then generate a complete App Privacy declaration, Age Rating questionnaire answers, and a professional .docx report.
+You are an expert in Apple's App Store Privacy requirements, App Store Review Guidelines, and Age Rating system. When invoked, you scan the user's Xcode project to detect all privacy-relevant SDKs, frameworks, data collection patterns, perform deep scans for stale/orphan privacy keys across all targets, verify Device ID and ATT tracking parity, and provide an App Store Rejection Prevention Guide alongside complete PrivacyInfo.xcprivacy manifests, Age Rating answers, and submission reports.
 
 **Supported Platforms**: iOS, iPadOS, macOS, visionOS, watchOS, tvOS — the skill detects which platforms the app targets and adjusts detection accordingly.
 
@@ -19,6 +19,9 @@ Activate this skill when the user says any of:
 - "Generate a PrivacyInfo.xcprivacy"
 - "App privacy report"
 - "Privacy audit"
+- "Deep scan privacy keys"
+- "Check for App Store rejection risks"
+- "Audit privacy manifests for stale keys"
 - "Age rating"
 - "App Store submission report"
 - Or any reference to App Store privacy declarations, privacy nutrition labels, privacy manifests, or age rating questionnaires
@@ -53,9 +56,9 @@ Do **not** proceed to Phase 1 until this answer is received.
 
 ---
 
-### Phase 1: Project Discovery
+### Phase 1: Project Discovery & Manifest Inventory
 
-Scan the project root to identify the project structure and dependency management:
+Scan the project root to identify the project structure, targets, dependency management, and existing privacy files:
 
 1. **Use Glob** to find:
    - `**/Package.swift` (Swift Package Manager)
@@ -63,22 +66,32 @@ Scan the project root to identify the project structure and dependency managemen
    - `**/Cartfile` (Carthage)
    - `**/*.xcodeproj/project.pbxproj` (Xcode project)
    - `**/*.xcworkspace` (Xcode workspace)
-   - `**/PrivacyInfo.xcprivacy` (existing privacy manifests)
-   - `**/Info.plist` (platform and entitlements info)
+   - `**/PrivacyInfo.xcprivacy` (existing privacy manifests across all targets)
+   - `**/Info.plist` (platform, permissions, and usage descriptions)
+   - `**/*.xcstrings` (String Catalogs, especially `InfoPlist.xcstrings` and `Localizable.xcstrings`)
 
-2. **Read** each found file to extract:
-   - SPM: `.package(url:` entries → dependency names and URLs
-   - CocoaPods: `pod '...'` entries → pod names
-   - Carthage: dependency names
-   - Existing privacy manifests: current declarations
+2. **Read and Inventory Existing Privacy Files**:
+   - **SPM**: `.package(url:` entries → dependency names, URLs, and versions
+   - **CocoaPods**: `pod '...'` entries → pod names
+   - **Carthage**: dependency names
+   - **Existing Privacy Manifests (`PrivacyInfo.xcprivacy`)**: For EACH target found, read the plist and record:
+     - `NSPrivacyTracking`: current boolean (`<true/>` or `<false/>`)
+     - `NSPrivacyTrackingDomains`: list of declared tracking domains
+     - `NSPrivacyCollectedDataTypes`: all declared data types, including linked status, tracking status (`NSPrivacyCollectedDataTypeTracking`), and purposes
+     - `NSPrivacyAccessedAPITypes`: all declared Required Reason API categories and reasons
+   - **Info.plist & xcstrings**: For EACH target, inventory all `NSUsageDescription` keys, especially `NSUserTrackingUsageDescription`, `NSCameraUsageDescription`, `NSLocation*`, etc.
 
-3. **Detect target platforms** by scanning:
-   - `project.pbxproj` for `SDKROOT` and `SUPPORTED_PLATFORMS` (iphoneos, macosx, appletvos, watchos, xros)
+3. **Detect Target Platforms and Targets**:
+   - `project.pbxproj` for `SDKROOT`, `SUPPORTED_PLATFORMS` (iphoneos, macosx, appletvos, watchos, xros), and target names
    - `Package.swift` for `.iOS`, `.macOS`, `.visionOS`, `.watchOS`, `.tvOS` platform declarations
+   - Target directories (e.g. `MyApp`, `MyApp Watch App`, `MyApp Mac`, `MyApp Vision`, `MyApp TV`, `MyAppWidget`)
    - `#if os(iOS)`, `#if os(macOS)`, `#if os(visionOS)`, `#if os(watchOS)`, `#if os(tvOS)` conditional compilation blocks
-   - `.destination` or target names containing "Watch", "TV", "Vision", "Mac"
 
-4. **Report** what was found: project name, target platform(s), dependency manager(s), number of dependencies detected.
+4. **Report Inventory**:
+   - Project name, detected target(s) and platform(s)
+   - Dependency managers and active dependencies
+   - List of all existing `PrivacyInfo.xcprivacy` files and their current tracking/advertising status
+   - List of all `Info.plist` / `xcstrings` usage descriptions
 
 5. **Record detected platforms** as `DETECTED_PLATFORMS` — a set drawn from `iOS`, `iPadOS`, `macOS`, `visionOS`, `watchOS`, `tvOS`. If none can be determined, default to `[iOS, iPadOS]`. iOS and iPadOS are always treated as a pair — detecting one implies the other. All Phase 9 compliance checks reference this set.
 
@@ -405,9 +418,136 @@ accessibilityIgnoresInvertColors
 
 ---
 
+### Phase 3.5: Deep Scan & Stale / Orphan Privacy Key Audit (Manifest Drift Detection)
+
+Run a bidirectional audit comparing **what is in code** (Phases 2 & 3) against **what is currently declared in existing manifests, plists, and xcstrings** (Phase 1). This is the **#1 source of App Store rejections**: developers remove an ad framework (e.g. AdMob) or remove ATT tracking from code, but forget to update existing `PrivacyInfo.xcprivacy`, `Info.plist`, or `xcstrings` across all targets.
+
+For **EVERY target** with an existing `PrivacyInfo.xcprivacy`, `Info.plist`, or `*.xcstrings`, perform these 7 deep scan checks:
+
+#### 1. Stale Tracking Flag Audit (`NSPrivacyTracking`)
+- **Check**: Does the target's `PrivacyInfo.xcprivacy` contain `<key>NSPrivacyTracking</key><true/>`?
+- **Code verification**:
+  - Is `ATTrackingManager.requestTrackingAuthorization` present in the target's code?
+  - Are any active tracking SDKs present (e.g., `GoogleMobileAds`, `FacebookCore`, `Adjust`, `AppsFlyer`, `Branch`)?
+- **Finding**:
+  - If `NSPrivacyTracking` is `<true/>` BUT no tracking SDK or ATT prompt exists in code:
+    - **Severity**: **🚨 CRITICAL (Immediate App Store Rejection Risk — §5.1.2)**
+    - **Rejection Reason**: Apple's automated ingest flags apps declaring tracking without ATT implementation, or reviewers reject under §5.1.2 for failing to present the ATT dialog.
+    - **Action**: Change `<key>NSPrivacyTracking</key><false/>` in that target's `PrivacyInfo.xcprivacy`.
+
+#### 2. Stale Advertising Data Audit (`NSPrivacyCollectedDataTypeAdvertisingData`)
+- **Check**: Does `NSPrivacyCollectedDataTypes` include `NSPrivacyCollectedDataTypeAdvertisingData`?
+- **Code verification**:
+  - Is any advertising SDK (`GoogleMobileAds`, `AdMob`, `UnityAds`, `AppLovin`, etc.) imported or linked in this target?
+- **Finding**:
+  - If `Advertising Data` is declared BUT no ad SDK is active in code (e.g. AdMob was removed):
+    - **Severity**: **🚨 CRITICAL (Immediate App Store Rejection Risk — §5.1.1, §5.1.2)**
+    - **Rejection Reason**: Declaring advertising data triggers App Store review scrutiny for ad displays and ATT. If no ads exist, Apple rejects for inaccurate privacy declarations or missing ATT.
+    - **Action**: Remove the entire `NSPrivacyCollectedDataTypeAdvertisingData` dict entry from `NSPrivacyCollectedDataTypes` in that target's `PrivacyInfo.xcprivacy`. Also update App Store Connect to uncheck Advertising Data.
+
+#### 3. Device ID & Analytics / Crashlytics Tracking Parity Audit
+- **Check**: Does `NSPrivacyCollectedDataTypes` include `NSPrivacyCollectedDataTypeDeviceID`?
+- **Code verification**:
+  - Does the app use Firebase Analytics, Firebase Crashlytics, TelemetryDeck, or Mixpanel?
+  - Does the entry specify `<key>NSPrivacyCollectedDataTypeTracking</key><true/>` or `<false/>`?
+- **Finding**:
+  - Firebase Analytics uses App Instance ID / IDFV (`Device ID`) for **Analytics**. Crashlytics uses device/installation identifiers for **App Functionality**.
+  - **CRITICAL RULE**: If the app does NOT perform cross-app tracking with an ad network, `NSPrivacyCollectedDataTypeTracking` **MUST BE `<false/>`**!
+  - If `NSPrivacyCollectedDataTypeTracking` is `<true/>` but no ad network / ATT prompt exists:
+    - **Severity**: **🚨 CRITICAL (Guaranteed App Store Rejection)**
+    - **Rejection Reason**: Apple requires ATT for any data type where Tracking = true. If Device ID is marked as tracking, Apple demands an ATT prompt.
+    - **Action**: Set `<key>NSPrivacyCollectedDataTypeTracking</key><false/>` for `NSPrivacyCollectedDataTypeDeviceID`.
+
+#### 4. Stale Tracking Domains Audit (`NSPrivacyTrackingDomains`)
+- **Check**: Does `NSPrivacyTrackingDomains` contain entries (e.g. `doubleclick.net`, `googleads.g.doubleclick.net`, `graph.facebook.com`)?
+- **Code verification**:
+  - Are those tracking services still active in code?
+- **Finding**:
+  - If tracking domains remain after removing ad/tracking SDKs:
+    - **Severity**: **🚨 CRITICAL**
+    - **Action**: Clear the array to `<array/>`.
+
+#### 5. Orphan `NSUserTrackingUsageDescription` Audit (Info.plist & xcstrings)
+- **Check**: Does `Info.plist`, `InfoPlist.xcstrings`, or `Localizable.xcstrings` contain `NSUserTrackingUsageDescription`?
+- **Code verification**:
+  - Is `AppTrackingTransparency` imported and `requestTrackingAuthorization` actually invoked?
+- **Finding**:
+  - If `NSUserTrackingUsageDescription` is present in Info.plist / xcstrings BUT ATT is NOT called in code:
+    - **Severity**: **⚠️ HIGH-RISK WARN (Common App Store Rejection)**
+    - **Rejection Reason**: Reviewers reject under Guideline 2.1 (App Completeness) or 5.1.2 asking why tracking permission is configured if the app never prompts the user.
+    - **Action**: Remove `NSUserTrackingUsageDescription` from `Info.plist` and string catalogs.
+  - If `requestTrackingAuthorization` IS called in code BUT `NSUserTrackingUsageDescription` is missing or empty:
+    - **Severity**: **🚨 CRITICAL (App will crash on iOS 14.5+ or get rejected under §5.1.1)**
+    - **Action**: Add a clear, non-generic `NSUserTrackingUsageDescription` explaining the exact feature.
+
+#### 6. Stale Required Reason APIs Audit (`NSPrivacyAccessedAPITypes`)
+- **Check**: Are any API categories declared in `NSPrivacyAccessedAPITypes` that are no longer used by the target?
+  - E.g., `NSPrivacyAccessedAPICategoryUserDefaults` when UserDefaults was replaced by SwiftData/CoreData, or `NSPrivacyAccessedAPICategoryFileTimestamp` when file APIs were removed.
+- **Finding**:
+  - **Severity**: **⚠️ INFO / WARN**
+  - **Action**: Remove unused API categories to reduce Apple scanner scrutiny.
+
+#### 7. Multi-Target Drift & Isolation Audit
+- **Check**: Compare declarations across all targets (e.g., iOS vs. watchOS vs. macOS vs. visionOS vs. widgets).
+- **Finding**:
+  - If a watchOS, macOS, or visionOS target inherits iOS advertising/tracking declarations (e.g. AdMob in a Watch app):
+    - **Severity**: **🚨 CRITICAL** (Violates §2.5.18: No ads in watchOS / extensions).
+    - **Action**: Scope each `PrivacyInfo.xcprivacy` strictly to the APIs and SDKs used in that specific target.
+
+#### Deep Scan Report Summary
+Include a **Manifest Drift & Stale Declarations** table in the findings:
+
+| Target | Manifest File | Item Audited | Current Declared | Actual Code State | Drift Severity | Remediation |
+|--------|---------------|--------------|------------------|-------------------|----------------|-------------|
+
+---
+
 ### Phase 4: SDK-to-Privacy Mapping
 
 Apply the following knowledge base to map each detected SDK/framework to Apple's privacy data types. This is the core reference table.
+
+#### Critical Deep-Dive: Device ID, Firebase Analytics & Crashlytics vs. AdMob Tracking
+
+Understanding Apple's definition of `Device ID` is essential to avoid App Store rejections:
+- **What counts as Device ID (`NSPrivacyCollectedDataTypeDeviceID`)**:
+  - Firebase App Instance ID (`app_instance_id`)
+  - Vendor Identifier (`identifierForVendor` / IDFV)
+  - Firebase Crashlytics installation/device UUIDs
+  - Advertising Identifier (`ASIdentifierManager.advertisingIdentifier` / IDFA)
+- **Firebase Analytics + Crashlytics WITHOUT Ads (The Standard Safe Pattern)**:
+  - `Device ID`: Linked = **No** (unless `Analytics.setUserID` is called), Tracking = **NO (`<false/>`)**, Purpose = `NSPrivacyCollectedDataTypePurposeAnalytics`
+  - `Diagnostics`: Linked = **No**, Tracking = **NO (`<false/>`)**, Purpose = `NSPrivacyCollectedDataTypePurposeAnalytics` / `AppFunctionality`
+  - `NSPrivacyTracking`: **MUST BE `<false/>`**
+  - ATT Prompt (`requestTrackingAuthorization`): **NOT REQUIRED**
+  - **App Store Connect**: Answer "Yes" to collecting Device ID and Diagnostics, but select **Analytics** / **App Functionality** and specify **"No, this data is not used for tracking purposes"**.
+- **When Device ID BECOMES Tracking (AdMob, Facebook, Ad Attribution)**:
+  - If Google Mobile Ads (AdMob), Facebook SDK, Adjust, AppsFlyer, or IDFA is present:
+  - `Device ID`: Linked = No, Tracking = **YES (`<true/>`)**, Purpose = `Third-Party Advertising`
+  - `Advertising Data`: Linked = No, Tracking = **YES (`<true/>`)**, Purpose = `Third-Party Advertising`
+  - `NSPrivacyTracking`: **MUST BE `<true/>`**
+  - ATT Prompt (`ATTrackingManager.requestTrackingAuthorization`): **MANDATORY BEFORE ANY TRACKING DATA IS ACCESSED**
+  - `NSUserTrackingUsageDescription`: **MANDATORY in Info.plist & xcstrings**
+
+#### The Ad SDK Removal & Migration Protocol (e.g. Removing AdMob / Ads)
+> **CRITICAL REJECTION HAZARD**: If you remove AdMob or any ad SDK, you **MUST** execute every step of this protocol across all targets! Leaving stale advertising or tracking flags in your privacy manifest or App Store Connect will cause an immediate App Store rejection.
+
+1. **Codebase Cleanup**:
+   - Remove ad framework dependencies from `Package.swift`, `Podfile`, or Xcode Frameworks.
+   - Remove `import GoogleMobileAds`, `GADMobileAds.sharedInstance().start(...)`, `GADBannerView`, etc.
+   - If no other tracking SDK is used, remove `import AppTrackingTransparency` and `ATTrackingManager.requestTrackingAuthorization(...)`.
+2. **`PrivacyInfo.xcprivacy` Cleanup (All Targets)**:
+   - Set `<key>NSPrivacyTracking</key><false/>`.
+   - Remove the `NSPrivacyCollectedDataTypeAdvertisingData` dict completely from `NSPrivacyCollectedDataTypes`.
+   - In the `NSPrivacyCollectedDataTypeDeviceID` dict (used by Firebase Analytics), change `<key>NSPrivacyCollectedDataTypeTracking</key>` to `<false/>`.
+   - Set `<key>NSPrivacyTrackingDomains</key><array/>` (empty array, remove `doubleclick.net`, etc.).
+3. **`Info.plist` & String Catalogs (`*.xcstrings`) Cleanup**:
+   - Delete `NSUserTrackingUsageDescription` from `Info.plist`.
+   - Delete `NSUserTrackingUsageDescription` from `InfoPlist.xcstrings` and `Localizable.xcstrings`.
+   - Delete `SKAdNetworkItems` from `Info.plist` (unless running non-tracking Apple Search Ads).
+4. **App Store Connect Privacy Nutrition Labels Update**:
+   - Question: *"Do you or your third-party partners use data from this app to track users?"* → Select **"No"**.
+   - Under Data Types Collected: **Uncheck Advertising Data**.
+   - Under Device ID: Edit declarations → Set Tracking to **"No, this data is not used for tracking purposes"**.
 
 #### Firebase Analytics
 | Data Type | Linked | Tracking | Purpose |
@@ -694,9 +834,20 @@ Generate a `PrivacyInfo.xcprivacy` file for **each platform target** detected in
 
 > **Important**: Only include data types and APIs relevant to each specific platform target. For example, a watchOS target that only uses HealthKit should not include AdMob-related declarations that exist only in the iOS target.
 
-#### PrivacyInfo.xcprivacy Format
+#### Manifest Reconciliation & Stale Key Purge
+If a `PrivacyInfo.xcprivacy` already exists in a target:
+- **Do NOT blindly preserve existing entries**: Cross-reference each entry with the Phase 3.5 Deep Scan findings.
+- **Actively purge stale declarations**:
+  - If AdMob/ad SDK was removed: **DELETE** `NSPrivacyCollectedDataTypeAdvertisingData` completely, set `NSPrivacyTracking` to `<false/>`, change `NSPrivacyCollectedDataTypeTracking` for `NSPrivacyCollectedDataTypeDeviceID` to `<false/>`, and empty `NSPrivacyTrackingDomains` (`<array/>`).
+  - If Required Reason APIs were removed: delete unneeded `NSPrivacyAccessedAPITypes` dictionaries.
+- When generating/updating files, print a clear diff showing removed stale keys and added keys.
 
-Generate a valid Apple privacy manifest plist file. Use the exact Apple constant names.
+#### PrivacyInfo.xcprivacy Format & Concrete Patterns
+
+Generate a valid Apple privacy manifest plist file using exact Apple constant names.
+
+##### Pattern A: Firebase Analytics + Crashlytics (NO ADS / NO ATT — Standard Privacy-Safe App)
+Use this pattern when the app uses Firebase Analytics and/or Crashlytics, but has NO AdMob, NO third-party ad tracking, and NO ATT prompt.
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -709,31 +860,124 @@ Generate a valid Apple privacy manifest plist file. Use the exact Apple constant
     <array/>
     <key>NSPrivacyCollectedDataTypes</key>
     <array>
-        <!-- One dict per collected data type -->
+        <!-- Firebase Analytics: Device ID (app_instance_id / IDFV) -->
         <dict>
             <key>NSPrivacyCollectedDataType</key>
-            <string>[constant]</string>
+            <string>NSPrivacyCollectedDataTypeDeviceID</string>
             <key>NSPrivacyCollectedDataTypeLinked</key>
-            <true/> or <false/>
+            <false/>
             <key>NSPrivacyCollectedDataTypeTracking</key>
-            <true/> or <false/>
+            <false/>
             <key>NSPrivacyCollectedDataTypePurposes</key>
             <array>
-                <string>[purpose constant]</string>
+                <string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
+            </array>
+        </dict>
+        <!-- Firebase Analytics: Product Interaction -->
+        <dict>
+            <key>NSPrivacyCollectedDataType</key>
+            <string>NSPrivacyCollectedDataTypeProductInteraction</string>
+            <key>NSPrivacyCollectedDataTypeLinked</key>
+            <false/>
+            <key>NSPrivacyCollectedDataTypeTracking</key>
+            <false/>
+            <key>NSPrivacyCollectedDataTypePurposes</key>
+            <array>
+                <string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
+            </array>
+        </dict>
+        <!-- Firebase Crashlytics & Analytics: Diagnostics -->
+        <dict>
+            <key>NSPrivacyCollectedDataType</key>
+            <string>NSPrivacyCollectedDataTypeDiagnostics</string>
+            <key>NSPrivacyCollectedDataTypeLinked</key>
+            <false/>
+            <key>NSPrivacyCollectedDataTypeTracking</key>
+            <false/>
+            <key>NSPrivacyCollectedDataTypePurposes</key>
+            <array>
+                <string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
+                <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
             </array>
         </dict>
     </array>
     <key>NSPrivacyAccessedAPITypes</key>
     <array>
-        <!-- One dict per Required Reason API used -->
+        <!-- Declare only Required Reason APIs actually used in code (e.g. UserDefaults) -->
+        <dict>
+            <key>NSPrivacyAccessedAPIType</key>
+            <string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+            <key>NSPrivacyAccessedAPITypeReasons</key>
+            <array>
+                <string>CA92.1</string>
+            </array>
+        </dict>
     </array>
 </dict>
 </plist>
 ```
 
-Set `NSPrivacyTracking` to `<true/>` only if the app uses data for tracking (ATT required).
+##### Pattern B: Google AdMob / Third-Party Ads (WITH Tracking & ATT Implemented)
+Use this pattern ONLY when the app actively serves ads, collects IDFA, and displays an ATT prompt before any tracking.
 
-For `NSPrivacyTrackingDomains`, include domains of third-party trackers if tracking is enabled (e.g., `analytics.google.com`, `graph.facebook.com`).
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>NSPrivacyTracking</key>
+    <true/>
+    <key>NSPrivacyTrackingDomains</key>
+    <array>
+        <string>googleads.g.doubleclick.net</string>
+        <string>pagead2.googlesyndication.com</string>
+    </array>
+    <key>NSPrivacyCollectedDataTypes</key>
+    <array>
+        <!-- AdMob: Advertising Data (Tracking = True) -->
+        <dict>
+            <key>NSPrivacyCollectedDataType</key>
+            <string>NSPrivacyCollectedDataTypeAdvertisingData</string>
+            <key>NSPrivacyCollectedDataTypeLinked</key>
+            <false/>
+            <key>NSPrivacyCollectedDataTypeTracking</key>
+            <true/>
+            <key>NSPrivacyCollectedDataTypePurposes</key>
+            <array>
+                <string>NSPrivacyCollectedDataTypePurposeThirdPartyAdvertising</string>
+            </array>
+        </dict>
+        <!-- AdMob / Firebase: Device ID (Tracking = True) -->
+        <dict>
+            <key>NSPrivacyCollectedDataType</key>
+            <string>NSPrivacyCollectedDataTypeDeviceID</string>
+            <key>NSPrivacyCollectedDataTypeLinked</key>
+            <false/>
+            <key>NSPrivacyCollectedDataTypeTracking</key>
+            <true/>
+            <key>NSPrivacyCollectedDataTypePurposes</key>
+            <array>
+                <string>NSPrivacyCollectedDataTypePurposeThirdPartyAdvertising</string>
+                <string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
+            </array>
+        </dict>
+    </array>
+    <key>NSPrivacyAccessedAPITypes</key>
+    <array>
+        <dict>
+            <key>NSPrivacyAccessedAPIType</key>
+            <string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+            <key>NSPrivacyAccessedAPITypeReasons</key>
+            <array>
+                <string>CA92.1</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>
+```
+
+> **CRITICAL RULE**: Never declare `NSPrivacyTracking: <true/>` or `NSPrivacyCollectedDataTypeAdvertisingData` if you removed AdMob or do not call `ATTrackingManager.requestTrackingAuthorization`. Apple's automated ingest and human reviewers will reject the app immediately.
 
 ---
 
@@ -1146,26 +1390,41 @@ After Age Rating analysis and before generating the report, run these submission
 
 > **Platform-scoped checks**: Each check below opens with a `> Platforms:` blockquote specifying which platforms it applies to. If none of those platforms are in `DETECTED_PLATFORMS`, skip the check entirely and record it as `⏭ SKIPPED (platform not targeted)` in the Compliance Findings table.
 
-#### 8a — ATT Cross-Check (§5.1.2)
+#### 8a — ATT & Tracking Parity Cross-Check (§5.1.2)
 
 > **Platforms**: iOS, iPadOS, macOS (11.1+), tvOS (14.5+), visionOS
 > *Skip if none of these are in `DETECTED_PLATFORMS` — ATT framework is not available on watchOS.*
 
-If **any** of these were detected in Phase 2 or 3:
-- `GoogleMobileAds`, `GADBannerView`, `GADInterstitialAd`, `GADRewardedAd`
-- `FacebookCore`, `FBSDKCoreKit`
-- `AdSupport`, `ASIdentifierManager`, `advertisingIdentifier`
-- `Adjust`, `AppsFlyer`, `Branch`, `Singular`, `Kochava`
+Perform a **bidirectional parity check** between the codebase and existing privacy manifests/Info.plist files:
 
-Then **verify ATT is implemented** by grepping for:
-- `ATTrackingManager.requestTrackingAuthorization`
-- `import AppTrackingTransparency`
+1. **Forward Check (Tracking in Code → ATT Required)**:
+   If **any** tracking or ad SDK was detected in Phase 2 or 3:
+   - `GoogleMobileAds`, `GADBannerView`, `GADInterstitialAd`, `GADRewardedAd`
+   - `FacebookCore`, `FBSDKCoreKit`
+   - `AdSupport`, `ASIdentifierManager`, `advertisingIdentifier`
+   - `Adjust`, `AppsFlyer`, `Branch`, `Singular`, `Kochava`
+   Then verify:
+   - `ATTrackingManager.requestTrackingAuthorization` is called in code BEFORE any tracking data or ad SDK is initialized.
+   - `NSUserTrackingUsageDescription` is present in `Info.plist` and non-empty.
+   - `NSPrivacyTracking` is `<true/>` in `PrivacyInfo.xcprivacy`.
 
-| Result | Severity | Finding |
-|--------|----------|---------|
-| Tracking SDK found + ATT missing | **CRITICAL** | App will be rejected — ATT is mandatory for tracking (§5.1.2) |
-| Tracking SDK found + ATT present | ✅ PASS | ATT correctly implemented |
-| No tracking SDK | ✅ N/A | ATT not required |
+2. **Reverse Check (Tracking Declared in Manifest / Info.plist → Code Support Required — User Rejection Trap)**:
+   Check whether `PrivacyInfo.xcprivacy` or `Info.plist` declares tracking when no tracking SDK exists:
+   - Does `PrivacyInfo.xcprivacy` have `<key>NSPrivacyTracking</key><true/>`?
+   - Does `PrivacyInfo.xcprivacy` have `NSPrivacyCollectedDataTypeAdvertisingData`?
+   - Does `PrivacyInfo.xcprivacy` have `NSPrivacyCollectedDataTypeDeviceID` with `<key>NSPrivacyCollectedDataTypeTracking</key><true/>`?
+   - Does `Info.plist` or `*.xcstrings` have `NSUserTrackingUsageDescription`?
+
+| Result | Severity | Finding | Action Required |
+|--------|----------|---------|-----------------|
+| Tracking SDK found + ATT missing in code | **CRITICAL** | App will be rejected — ATT is mandatory for tracking (§5.1.2) | Implement `ATTrackingManager.requestTrackingAuthorization` and add `NSUserTrackingUsageDescription`. |
+| Tracking SDK found + ATT present + Description missing/empty | **CRITICAL** | App will crash on iOS 14.5+ or be rejected for missing purpose string (§5.1.1) | Add clear `NSUserTrackingUsageDescription` in Info.plist. |
+| No tracking SDK in code + `NSPrivacyTracking: true` declared | **CRITICAL** | App will be rejected — declared tracking without ATT prompt in app (§5.1.2) | Change `NSPrivacyTracking` to `<false/>` in `PrivacyInfo.xcprivacy`. |
+| No tracking SDK in code + `Advertising Data` declared | **CRITICAL** | App will be rejected — declared advertising data when ads were removed (§5.1.1) | Remove `NSPrivacyCollectedDataTypeAdvertisingData` from manifest and uncheck in App Store Connect. |
+| No tracking SDK in code + `Device ID (Tracking: true)` declared | **CRITICAL** | App will be rejected — Device ID marked as tracking without ATT prompt (§5.1.2) | Change `NSPrivacyCollectedDataTypeTracking` to `<false/>` for Device ID. |
+| No tracking SDK in code + `NSUserTrackingUsageDescription` in Info.plist | **WARN** | Reviewer scrutiny — orphan tracking description triggers App Completeness inquiry (§2.1, §5.1.2) | Remove `NSUserTrackingUsageDescription` from `Info.plist` and `*.xcstrings`. |
+| Tracking SDK found + ATT present + non-empty description | ✅ PASS | ATT correctly implemented | Ensure ATT prompt triggers before trackers start. |
+| No tracking SDK + all tracking flags false/removed | ✅ PASS | Privacy-safe configuration (No ATT needed) | No action needed. |
 
 #### 8b — Info.plist Purpose String Quality (§5.1.1)
 
@@ -2016,6 +2275,51 @@ Detect: age assurance and minor-protection mechanisms.
 
 ---
 
+#### 8aq — Stale / Orphan Privacy Declarations & Manifest Drift (§5.1.1, §5.1.2)
+
+> **Platforms**: iOS, iPadOS, macOS, visionOS, watchOS, tvOS — applies to all platforms.
+
+Audit all target `PrivacyInfo.xcprivacy`, `Info.plist`, and `*.xcstrings` against the active codebase to detect **stale declarations left behind after removing features or SDKs** (such as removing Google AdMob, Facebook SDK, or ATT):
+
+- **Check 1**: Does `NSPrivacyTracking` equal `<true/>` in any target where no tracking SDK or ATT prompt exists?
+- **Check 2**: Is `NSPrivacyCollectedDataTypeAdvertisingData` present in `PrivacyInfo.xcprivacy` when no advertising SDK is linked?
+- **Check 3**: Are tracking domains declared in `NSPrivacyTrackingDomains` for services no longer active in the app?
+- **Check 4**: Is `NSUserTrackingUsageDescription` present in `Info.plist` or `*.xcstrings` when the app no longer calls `requestTrackingAuthorization`?
+- **Check 5**: Are iOS-specific advertising/tracking declarations present in watchOS, tvOS, or extension targets?
+
+| Result | Severity | Finding |
+|--------|----------|---------|
+| Stale `NSPrivacyTracking: true` without active tracking code | **CRITICAL** | App will be rejected under §5.1.2 for declaring tracking without presenting the mandatory ATT consent dialog. Change `NSPrivacyTracking` to `<false/>`. |
+| Stale `Advertising Data` declared in manifest after ad SDK removal | **CRITICAL** | App will be rejected under §5.1.1/§5.1.2 for inaccurate privacy declarations or missing ad tracking disclosure. Remove `NSPrivacyCollectedDataTypeAdvertisingData`. |
+| Stale tracking domains in `NSPrivacyTrackingDomains` | **CRITICAL** | Reviewers inspect network traffic against declared tracking domains. Empty `NSPrivacyTrackingDomains` to `<array/>`. |
+| Orphan `NSUserTrackingUsageDescription` in Info.plist / xcstrings | **WARN** | Reviewers test whether the ATT prompt appears. If the string exists without an active prompt, Apple rejects under Guideline 2.1 (App Completeness). Remove the orphan string. |
+| Non-iOS target (watchOS/tvOS) contains inherited ad/tracking keys | **CRITICAL** | Violates §2.5.18 (No ads in watchOS/extensions). Remove ad keys from non-iOS target manifests. |
+| All manifest declarations match current code with zero stale keys | ✅ PASS | Privacy manifests are synchronized with codebase. |
+
+---
+
+#### 8ar — Device ID & Analytics Tracking Parity (Firebase Analytics, Crashlytics, Telemetry) (§5.1.1, §5.1.2)
+
+> **Platforms**: iOS, iPadOS, macOS, visionOS, watchOS, tvOS — applies to all platforms.
+
+Validate that device identifiers collected by analytics and diagnostics SDKs (Firebase Analytics `app_instance_id`, IDFV, Crashlytics installation UUIDs) are accurately declared and **NOT mistakenly flagged as tracking**:
+
+- Grep for analytics/crash SDKs: `FirebaseAnalytics`, `FirebaseCrashlytics`, `TelemetryDeck`, `Mixpanel`, `Amplitude`, `Sentry`.
+- Check `PrivacyInfo.xcprivacy` across all targets for `NSPrivacyCollectedDataTypeDeviceID`:
+  - Verify purpose is set to `NSPrivacyCollectedDataTypePurposeAnalytics` and/or `NSPrivacyCollectedDataTypePurposeAppFunctionality`.
+  - Verify `NSPrivacyCollectedDataTypeTracking` is strictly `<false/>` unless third-party ad tracking (AdMob/IDFA) is also active with ATT.
+- Check App Store Connect declaration instructions: confirm developer does not select "Used for tracking" for analytics identifiers.
+
+| Result | Severity | Finding |
+|--------|----------|---------|
+| Firebase Analytics/Crashlytics present + `NSPrivacyCollectedDataTypeDeviceID` declared with `Tracking = true` without ATT | **CRITICAL** | Setting Tracking = true on Device ID mandates an ATT prompt. Because Firebase Analytics alone is not cross-app tracking, this causes an immediate App Store rejection (§5.1.2). Change `NSPrivacyCollectedDataTypeTracking` to `<false/>`. |
+| Firebase Analytics present + `Device ID` omitted from privacy manifest | **WARN** | Firebase Analytics collects App Instance ID (classified by Apple as Device ID). Omission triggers ITMS warning or rejection under §5.1.1. Add `NSPrivacyCollectedDataTypeDeviceID` with Tracking = false. |
+| Firebase Analytics with `setUserID()` called + Linked declared as false | **WARN** | Calling `Analytics.setUserID()` links analytics to the user's identity. Set `NSPrivacyCollectedDataTypeLinked` to `<true/>`. |
+| Device ID correctly declared with `Tracking = false` for Analytics | ✅ PASS | Device ID and analytics tracking parity satisfied. |
+| No analytics or device identifier collection detected | ✅ N/A | Not applicable |
+
+---
+
 #### Compliance Summary Output
 
 Include a **Compliance Findings** section in the report with this table:
@@ -2071,11 +2375,84 @@ Include a **Compliance Findings** section in the report with this table:
 | EnergyKit identity guidelines | Att. 11 §4 | ... | [reason] |
 | Spam / duplicate app risk | §4.3(a) / §4.3(b) | ... | [reason] |
 | Kid & teen safety age assurance | Intro / §7.9 | ... | [reason] |
+| Stale / orphan privacy declarations | §5.1.1, §5.1.2 | ... | [reason] |
+| Device ID & analytics tracking parity | §5.1.1, §5.1.2 | ... | [reason] |
 ```
 
 > Checks skipped due to platform not being targeted appear as `⏭ SKIPPED (platform not targeted)`. Include these rows only when the check was explicitly evaluated and skipped — omit checks that simply did not trigger (N/A).
 
 🚨 = Must fix before submission | ⚠️ = Should fix | ✅ = No action needed
+
+---
+
+### Phase 9.1: Top App Store Rejection Triggers & Prevention Guide (The Fast-Pass Safety Net)
+
+> **Why this matters**: Getting rejected by Apple App Review adds **5 to 10 days of delay** per rejection round. More than 70% of rejections stem from predictable privacy, entitlement, and metadata desynchronizations. Always verify these top 10 rejection hazards before submitting:
+
+#### Hazard 1: ATT / Privacy Manifest Desynchronization (§5.1.2)
+- **The Rejection Trigger**: The app's `PrivacyInfo.xcprivacy` or App Store Connect answers declare tracking (`NSPrivacyTracking: true`, `Advertising Data`, or `Device ID` tracking), but the app does NOT present the AppTrackingTransparency prompt. **Most frequent cause**: Developer removed Google AdMob from code, but forgot to update `PrivacyInfo.xcprivacy` and App Store Connect.
+- **Apple's Typical Notice**:
+  > *"Guideline 5.1.2 - Legal - Privacy - Data Use and Sharing. We noticed that your app's App Privacy information indicates you collect data to track users, but we cannot find an App Tracking Transparency permission request when we review your app on iOS..."*
+- **Pre-Submission Fix**:
+  1. If ads were removed: Set `NSPrivacyTracking` to `<false/>`, delete `NSPrivacyCollectedDataTypeAdvertisingData`, set Device ID tracking to `<false/>`, and empty `NSPrivacyTrackingDomains`.
+  2. In App Store Connect: Edit Privacy Details → "Do you or your third-party partners use data from this app to track users?" → Select **"No"**.
+  3. If ads ARE used: Ensure `ATTrackingManager.requestTrackingAuthorization` is called **before** initializing ad SDKs, and `NSUserTrackingUsageDescription` is in `Info.plist`.
+
+#### Hazard 2: Device ID Misclassification with Firebase Analytics / Crashlytics (§5.1.1, §5.1.2)
+- **The Rejection Trigger**: Firebase Analytics collects App Instance ID (`app_instance_id`), which Apple classifies as `Device ID`. Developers mistakenly mark Device ID as "Used for Tracking" in App Store Connect or set `NSPrivacyCollectedDataTypeTracking: true` in `PrivacyInfo.xcprivacy`. Apple's scanner sees this as cross-app tracking and rejects for missing ATT. Alternatively, omitting Device ID completely when Firebase Analytics is linked triggers undeclared data collection warnings.
+- **Apple's Typical Notice**:
+  > *"Guideline 5.1.1 - Data Collection and Storage. We identified that your app collects Device ID / identifier information, but this is not disclosed in your App Privacy details in App Store Connect..."*
+- **Pre-Submission Fix**:
+  1. Declare `NSPrivacyCollectedDataTypeDeviceID` under `Analytics` (and `Diagnostics` under `App Functionality`).
+  2. Set `NSPrivacyCollectedDataTypeTracking` to `<false/>`.
+  3. Set `NSPrivacyTracking` to `<false/>`.
+  4. In App Store Connect: Select "No, this data is not used for tracking purposes".
+
+#### Hazard 3: Vague or Missing Info.plist Purpose Strings (§5.1.1)
+- **The Rejection Trigger**: Generic text in `NSUsageDescription` keys (e.g., "Camera access needed", "Used for app features", "Location needed").
+- **Apple's Typical Notice**:
+  > *"Guideline 5.1.1 - Legal - Privacy - Data Collection and Storage. The purpose string for NSCameraUsageDescription in your Info.plist is not specific enough to explain to the user why the app needs access..."*
+- **Pre-Submission Fix**: State the exact user feature: *"Lumina uses your camera to scan physical documents and extract text directly onto your device."*
+
+#### Hazard 4: Missing Required Reason API Declarations (`NSPrivacyAccessedAPITypes`) (§5.1.1)
+- **The Rejection Trigger**: Code calls `UserDefaults`, file timestamp APIs (`stat`, `getattrlist`), system boot time (`sysctl`), or disk space APIs without declaring an Apple-approved reason code in `PrivacyInfo.xcprivacy`.
+- **Apple's Typical Notice**:
+  > *"ITMS-91053: Missing API declaration - Your app's code in the 'MyApp' binary references one or more APIs that require reasons in a privacy manifest..."*
+- **Pre-Submission Fix**: Audit Required Reason APIs using Phase 3 pattern detection and declare exact Apple reasons (e.g., `CA92.1` for `UserDefaults` app-internal state).
+
+#### Hazard 5: In-App Account Deletion Non-Compliance (§5.1.1(v))
+- **The Rejection Trigger**: The app offers account creation, but does not provide an immediate in-app deletion button, or directs users to an external website or email address to request deletion.
+- **Apple's Typical Notice**:
+  > *"Guideline 5.1.1(v) - Data Collection and Storage - Account Deletion. If your app supports account creation, you must also offer account deletion within the app..."*
+- **Pre-Submission Fix**: Provide a dedicated "Delete Account" button in Settings/Profile that immediately initiates account and associated personal data deletion.
+
+#### Hazard 6: Missing "Restore Purchases" or Terms in StoreKit / IAP Flows (§3.1.1, §3.1.2)
+- **The Rejection Trigger**: Paywall displays purchase/subscription options but lacks a "Restore Purchases" button, or auto-renewable subscriptions omit links to the Privacy Policy and standard Apple Terms of Use (EULA).
+- **Apple's Typical Notice**:
+  > *"Guideline 3.1.1 - Business - Payments - In-App Purchase. We noticed that your app does not include a mechanism to restore previously purchased in-app purchases..."*
+- **Pre-Submission Fix**: Add a prominent "Restore Purchases" button invoking `AppStore.sync()` or StoreKit 2 restore, plus direct clickable links to Privacy Policy and Terms of Use.
+
+#### Hazard 7: Social Login Without Sign in with Apple Parity (§4.8)
+- **The Rejection Trigger**: Offering Google Sign-In, Facebook Login, or custom OAuth without offering Sign in with Apple as an equivalent or primary option.
+- **Apple's Typical Notice**:
+  > *"Guideline 4.8 - Design - Sign in with Apple. Apps that use a third-party or social login service must also offer Sign in with Apple as an equivalent option..."*
+- **Pre-Submission Fix**: Add `SignInWithAppleButton` whenever third-party social auth is implemented.
+
+#### Hazard 8: Undisclosed Third-Party AI Data Transmissions (§5.1.2(i))
+- **The Rejection Trigger**: Sending user prompts, text, images, or documents to remote LLMs (OpenAI, Gemini, Anthropic) without clear in-app disclosure, privacy policy disclosure, or terms explaining third-party processing.
+- **Apple's Typical Notice**:
+  > *"Guideline 5.1.2(i) - Legal - Privacy - Third-Party AI Disclosures. Your app integrates third-party generative AI services but does not sufficiently disclose to users that their data is transmitted to an external service..."*
+- **Pre-Submission Fix**: Integrate `AI-PRIVACY-DISCLOSURE.md` into your Privacy Policy and present an in-app disclosure before the user's first AI request.
+
+#### Hazard 9: Broken Links, Incomplete Features & Test Placeholders (§2.1, §2.3)
+- **The Rejection Trigger**: Reviewers test links and find a 404 on the Privacy Policy, encounter "Lorem Ipsum" or "TODO" in the UI, or demo login credentials fail.
+- **Apple's Typical Notice**:
+  > *"Guideline 2.1 - Performance - App Completeness. We discovered one or more bugs in your app when reviewed on iPad/iPhone running iOS..."*
+- **Pre-Submission Fix**: Test every URL, remove debug mockups, and provide active test credentials in App Store Connect App Review Notes.
+
+#### Hazard 10: Multi-Target Configuration Bleed
+- **The Rejection Trigger**: Watch app, Mac app, or visionOS target inherits iOS advertising/tracking manifests. Watch apps may not contain third-party ads (§2.5.18).
+- **Pre-Submission Fix**: Maintain separate, strictly scoped `PrivacyInfo.xcprivacy` manifests for each target directory.
 
 ---
 
@@ -2092,15 +2469,15 @@ Present each automated check result in checklist format:
 - ⚠️ if a warning was raised (should fix)
 - 🚨 if a critical issue was found (must fix)
 
-#### Manual Checklist (always include — requires human verification)
-
 ```markdown
 ## Pre-Submission Checklist
 
 ### Automated Checks
 | Check | Status | Notes |
 |-------|--------|-------|
-| ATT implemented for tracking SDKs | ✅/⚠️/🚨 | [from 8a] |
+| ATT & tracking parity | ✅/⚠️/🚨 | [from 8a] |
+| Stale / orphan privacy keys purged | ✅/⚠️/🚨 | [from 8aq — no drift detected] |
+| Device ID & analytics tracking parity | ✅/⚠️/🚨 | [from 8ar — Firebase tracking false] |
 | Privacy policy URL in Info.plist | ✅/⚠️ | [from 8j] |
 | Account deletion in settings | ✅/⚠️ | [from 8c] |
 | Restore Purchases implemented | ✅/⚠️ | [from 8d] |
@@ -2110,6 +2487,9 @@ Present each automated check result in checklist format:
 | No placeholder content | ✅/⚠️ | [from 8k] |
 
 ### Manual Checks (Verify Before Submitting)
+- [ ] App Store Connect: "Data Used to Track You" set to "No" (if no ads/ATT)
+- [ ] App Store Connect: "Advertising Data" unchecked (if AdMob/ads removed)
+- [ ] App Store Connect: "Device ID" tracking set to "No" (if Firebase Analytics without ads)
 - [ ] App launches without crashing on a fresh install on all supported devices
 - [ ] All tappable links and web content load correctly (no broken URLs)
 - [ ] Demo account credentials added in App Store Connect → App Review Information (if login required)
@@ -2237,6 +2617,10 @@ The document has the following structure:
     - Automated check results in checklist format (from Phase 9 + 9.2)
     - Manual verification checklist (crashes, links, screenshots, demo account, App Store Connect setup, export compliance)
     - Sourced from Apple's "Avoiding Common Issues" guidance at developer.apple.com/distribute/app-review/
+
+11. **Top App Store Rejection Triggers & Prevention Guide**
+    - Detailed analysis of the top 10 rejection hazards (ATT desynchronization, Device ID misclassification, purpose string quality, account deletion, Restore Purchases, etc.)
+    - Exact Apple guidelines, scanner trigger conditions, sample rejection messages, and immediate pre-submission fixes
 
 12. **PrivacyInfo.xcprivacy Contents**
    - One subsection per platform target (e.g., "iOS Target", "watchOS Target")
@@ -2398,9 +2782,10 @@ Use the Write tool to create `/tmp/gen_privacy_report_pdf.py`. The script must:
   7. **AI Data Practices** *(only if AI SDKs detected)* — per-provider table: Provider | Data Sent | Retention | User Consent Required
   8. **App Store Compliance Findings** — `Table`: Finding | Guideline | Status | Action Required. Color-code Status column by severity.
   9. **Pre-Submission Checklist** — automated checks table + manual checklist as bullet paragraphs with checkbox character `☐`
-  10. **PrivacyInfo.xcprivacy Contents** — one `CodeBlock` paragraph per platform target showing the XML
-  11. **Exemptions Applied** — table or bullet list of API exemptions claimed
-  12. **Confidence Notes & Limitations** — bullet list
+  10. **Top App Store Rejection Triggers & Prevention Guide** — table/bullet breakdown of the top 10 rejection hazards with causes, notices, and pre-submission fixes
+  11. **PrivacyInfo.xcprivacy Contents** — one `CodeBlock` paragraph per platform target showing the XML
+  12. **Exemptions Applied** — table or bullet list of API exemptions claimed
+  13. **Confidence Notes & Limitations** — bullet list
 
 - **Table helper** — define a `make_table(headers, rows, col_widths, status_col=None)` function that:
   - Applies header row style (`COLOR_ACCENT` bg, white bold text)

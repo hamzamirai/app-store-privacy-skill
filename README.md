@@ -8,21 +8,24 @@ Automatically scan your Apple platform Xcode project and generate complete App S
 
 1. **Scans** your project for privacy-relevant SDKs, frameworks, imports, code patterns, and AI APIs
 2. **Detects target platforms** (iOS, macOS, visionOS, watchOS, tvOS) and applies platform-specific checks
-3. **Maps** findings to Apple's privacy taxonomy (14 data categories, 30+ data types, 6 purposes)
-4. **Answers** the Age Rating questionnaire based on detected content (violence, medical, advertising, UGC, etc.)
-5. **Detects AI providers** (Apple Intelligence, OpenAI, Gemini, Claude/Anthropic, Mistral, etc.) and generates §5.1.2(i)-compliant disclosures
-6. **Runs compliance checks** against Apple Review Guidelines (ATT parity, account deletion, Restore Purchases, Apple Sign In, external payments)
-7. **Asks** clarifying questions for ambiguous cases
-8. **Generates** outputs in the project `Docs/` folder
+3. **Deep-scans for manifest drift & stale keys** — detects obsolete tracking flags, AdMob removal drift, and Device ID / Firebase mismatches across all target `PrivacyInfo.xcprivacy` and `Info.plist` files
+4. **Maps** findings to Apple's privacy taxonomy (14 data categories, 30+ data types, 6 purposes)
+5. **Answers** the Age Rating questionnaire based on detected content (violence, medical, advertising, UGC, etc.)
+6. **Detects AI providers** (Apple Intelligence, OpenAI, Gemini, Claude/Anthropic, Mistral, etc.) and generates §5.1.2(i)-compliant disclosures
+7. **Runs 44 compliance checks** against Apple Review Guidelines (bidirectional ATT parity, account deletion, Restore Purchases, Apple Sign In, external payments)
+8. **Provides an App Store Rejection Prevention Guide** covering the top 10 rejection hazards that cause 1-week review delays
+9. **Asks** clarifying questions for ambiguous cases
+10. **Generates** outputs in the project `Docs/AppPrivacyReport/` folder
 
 ## Outputs
 
 | File | Description |
 |------|-------------|
-| `Docs/APP-PRIVACY-AND-AGE-RATING-REPORT.docx` | Full report: privacy declarations, age rating, AI data practices, compliance findings |
-| `Docs/AI-PRIVACY-DISCLOSURE.md` | Branded AI disclosure sheet (generated on request, styled with app theme & colors) |
+| `Docs/AppPrivacyReport/APP-PRIVACY-AND-AGE-RATING-REPORT.docx` | Full report: privacy declarations, age rating, AI data practices, compliance findings |
+| `Docs/AppPrivacyReport/APP-PRIVACY-REPORT.md` | Complete Markdown report (zero dependencies) |
+| `Docs/AppPrivacyReport/AI-PRIVACY-DISCLOSURE.md` | Branded AI disclosure sheet (generated on request, styled with app theme & colors) |
 | `Shared/Views/Settings/AIPrivacyDisclosureView.swift` | Ready-to-use SwiftUI view — branded disclosure sheet with hero header, compliance badge, and disclosure cards matching the app's color system |
-| `<target>/PrivacyInfo.xcprivacy` | Apple privacy manifest — one per platform target |
+| `<target>/PrivacyInfo.xcprivacy` | Apple privacy manifest — one per platform target, reconciled with stale keys purged |
 
 ## Supported Platforms
 
@@ -62,7 +65,8 @@ In Claude Code, say any of:
 
 - `"Generate app privacy details for this project"`
 - `"Scan this app for privacy data collection"`
-- `"What privacy data does this app collect?"`
+- `"Deep scan privacy keys and check for manifest drift"`
+- `"Check for App Store rejection risks"`
 - `"Help me fill out the App Store privacy section"`
 - `"Generate a PrivacyInfo.xcprivacy"`
 - `"Run a privacy audit"`
@@ -91,11 +95,13 @@ tvOS: TVUserManager, TVTopShelfContentProvider
 
 ## App Store Compliance Checks
 
-Beyond privacy declarations, the skill also runs 42 pre-submission checks:
+Beyond privacy declarations, the skill also runs 44 pre-submission checks:
 
 | Check | Guideline | What It Verifies |
 |-------|-----------|-----------------|
-| ATT for tracking SDKs | §5.1.2 | Ad SDKs present → ATT must be implemented |
+| ATT & tracking parity | §5.1.2 | Bidirectional: Ad SDKs present → ATT mandatory; no ads in code → tracking flags must be false |
+| Stale / orphan privacy declarations | §5.1.1, §5.1.2 | Audits manifests for stale tracking keys, obsolete advertising data, or orphan usage descriptions after feature removals |
+| Device ID & analytics tracking parity | §5.1.1, §5.1.2 | Ensures Firebase Analytics / Crashlytics Device ID is not mistakenly marked as tracking |
 | Purpose string quality | §5.1.1 | NSUsageDescription strings must be specific, not vague |
 | Account deletion | §5.1.1 | If auth detected → delete account option must exist |
 | Restore Purchases | §3.1.1 | If IAP detected → restore flow must be implemented |
@@ -161,6 +167,31 @@ When AI SDKs are detected, the skill:
 | Google Gemini (free tier) | **Yes** | Unspecified | Google servers |
 | Google Gemini (paid tier) | No | Limited | Google servers |
 | Anthropic Claude | Opt-out available | 30 days | US |
+
+## Deep Scan & Manifest Drift Detection
+
+When developers remove ad frameworks (e.g. Google Mobile Ads / AdMob) or remove ATT prompts from code, existing `PrivacyInfo.xcprivacy` and `Info.plist` files often retain stale tracking keys. Apple's review process flags these discrepancies immediately, causing week-long submission delays.
+
+The skill runs a **bidirectional deep scan** across all targets:
+- **Stale Tracking Flag (`NSPrivacyTracking`)**: Flags `<true/>` when no tracking SDK or ATT prompt exists.
+- **Stale Advertising Data (`NSPrivacyCollectedDataTypeAdvertisingData`)**: Automatically identifies and purges obsolete advertising data declarations after ad SDK removal.
+- **Device ID Tracking Parity**: Validates that Firebase Analytics / Crashlytics Device ID (`app_instance_id` / IDFV) has `NSPrivacyCollectedDataTypeTracking` set to `<false/>` to prevent unneeded ATT rejections.
+- **Orphan Info.plist & xcstrings Keys**: Detects `NSUserTrackingUsageDescription` or `SKAdNetworkItems` remaining after ad removal.
+- **Multi-Target Isolation**: Ensures watchOS, macOS, visionOS, and extension targets do not inherit iOS advertising declarations.
+
+## Top App Store Rejection Prevention Guide
+
+The skill includes a dedicated **Fast-Pass Safety Net** covering the top 10 rejection hazards:
+1. **ATT / Manifest Desync (§5.1.2)**: Stale tracking keys or advertising data without ATT prompt.
+2. **Device ID Misclassification (§5.1.1 / §5.1.2)**: Firebase Analytics Device ID mistakenly marked as tracking.
+3. **Vague Purpose Strings (§5.1.1)**: Generic `NSUsageDescription` text.
+4. **Missing Required Reason APIs (§5.1.1)**: Undeclared `UserDefaults`, file timestamp, or disk space reasons.
+5. **Missing In-App Account Deletion (§5.1.1(v))**: Login enabled without in-app account deletion.
+6. **StoreKit & IAP Traps (§3.1.1 / §3.1.2)**: Missing "Restore Purchases" button or missing EULA/Privacy Policy links.
+7. **Social Login Parity (§4.8)**: Google/Facebook login without Sign in with Apple.
+8. **Undisclosed Third-Party AI Data Transmissions (§5.1.2(i))**: Missing AI data practices disclosure.
+9. **Broken Links & Placeholders (§2.1 / §2.3)**: Dead privacy links, "Lorem Ipsum", or failing test credentials.
+10. **Multi-Target Bleed**: Ads or iOS-only keys present in watchOS or widget manifests.
 
 ## Example Output Summary
 
